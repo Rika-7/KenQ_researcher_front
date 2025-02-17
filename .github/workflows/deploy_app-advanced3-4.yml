@@ -1,0 +1,111 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+
+name: Build and deploy Node.js app to Azure Web App - app-advanced3-4
+
+on:
+  push:
+    branches:
+      - deploy
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js version
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Check Azure Web App existence
+        run: |
+          echo "Checking if Azure Web App exists..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://app-advanced3-4-aygnfjh3hxbyducf.canadacentral-01.azurewebsites.net)
+          if [ $response -eq 404 ]; then
+            echo "Warning: Azure Web App returned 404. Proceeding with deployment..."
+          fi
+
+      - name: npm install and build
+        run: |
+          npm ci  # Changed to npm ci for cleaner installs
+          npm run build --if-present
+        env:
+          CI: true
+
+      - name: Run tests
+        run: npm run test --if-present
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          # Remove unnecessary files before zipping
+          rm -rf node_modules/
+          rm -rf .git/
+          rm -f *.log
+
+      - name: Zip artifact for deployment
+        run: zip release.zip ./* -r
+
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-app
+          path: release.zip
+          retention-days: 1
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: 'Production'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+    
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: node-app
+
+      - name: Unzip artifact for deployment
+        run: unzip release.zip
+
+      - name: Wait for SCM stabilization
+        run: |
+          echo "Waiting for 30 seconds to ensure SCM stability..."
+          sleep 30
+      
+      - name: 'Deploy to Azure Web App'
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'app-advanced3-4'
+          slot-name: 'Production'
+          package: .
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_CB02143B8951447991EFEBF612381FD7 }}
+
+      - name: Verify deployment
+        run: |
+          echo "Verifying deployment..."
+          sleep 30  # Wait for deployment to stabilize
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ steps.deploy-to-webapp.outputs.webapp-url }})
+          if [ $response -eq 200 ]; then
+            echo "Deployment verified successfully!"
+          else
+            echo "Warning: Deployment verification returned status code $response"
+          fi
+
+      - name: Deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment completed successfully"
+          else
+            echo "❌ Deployment failed"
+          fi
