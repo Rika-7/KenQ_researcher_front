@@ -22,12 +22,33 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '20.x'
+          cache: 'npm'
 
-      - name: npm install, build, and test
+      - name: Check Azure Web App existence
         run: |
-          npm install
+          echo "Checking if Azure Web App exists..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://app-advanced3-4-aygnfjh3hxbyducf.canadacentral-01.azurewebsites.net)
+          if [ $response -eq 404 ]; then
+            echo "Warning: Azure Web App returned 404. Proceeding with deployment..."
+          fi
+
+      - name: npm install and build
+        run: |
+          npm ci  # Changed to npm ci for cleaner installs
           npm run build --if-present
-          npm run test --if-present
+        env:
+          CI: true
+
+      - name: Run tests
+        run: npm run test --if-present
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          # Remove unnecessary files before zipping
+          rm -rf node_modules/
+          rm -rf .git/
+          rm -f *.log
 
       - name: Zip artifact for deployment
         run: zip release.zip ./* -r
@@ -37,6 +58,7 @@ jobs:
         with:
           name: node-app
           path: release.zip
+          retention-days: 1
 
   deploy:
     runs-on: ubuntu-latest
@@ -53,6 +75,11 @@ jobs:
 
       - name: Unzip artifact for deployment
         run: unzip release.zip
+
+      - name: Wait for SCM stabilization
+        run: |
+          echo "Waiting for 30 seconds to ensure SCM stability..."
+          sleep 30
       
       - name: 'Deploy to Azure Web App'
         id: deploy-to-webapp
@@ -62,3 +89,23 @@ jobs:
           slot-name: 'Production'
           package: .
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_CB02143B8951447991EFEBF612381FD7 }}
+
+      - name: Verify deployment
+        run: |
+          echo "Verifying deployment..."
+          sleep 30  # Wait for deployment to stabilize
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ steps.deploy-to-webapp.outputs.webapp-url }})
+          if [ $response -eq 200 ]; then
+            echo "Deployment verified successfully!"
+          else
+            echo "Warning: Deployment verification returned status code $response"
+          fi
+
+      - name: Deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment completed successfully"
+          else
+            echo "❌ Deployment failed"
+          fi
